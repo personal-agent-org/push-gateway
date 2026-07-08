@@ -57,11 +57,32 @@ def _rate_limits_body(counts: DailyCounts) -> dict[str, object]:
 
 
 def _client_ip(request: Request, trust_proxy: bool) -> str:
+    # Clients can pre-append X-Forwarded-For values (proxies APPEND), so only
+    # proxy-set headers or the last hop, the value our own proxy added, are safe.
     if trust_proxy:
+        for header in ("cf-connecting-ip", "x-real-ip"):
+            value = request.headers.get(header, "").strip()
+            if value:
+                return value
         forwarded = request.headers.get("x-forwarded-for", "")
         if forwarded:
-            return forwarded.split(",")[0].strip()
+            return forwarded.rsplit(",", 1)[-1].strip()
     return request.client.host if request.client else "unknown"
+
+
+async def _read_body_capped(request: Request, cap: int) -> bytes | None:
+    """Read the body without ever buffering more than cap plus one chunk; None = too large."""
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > cap:
+        return None
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > cap:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def create_app(settings: Settings | None = None, store: Store | None = None) -> FastAPI:
@@ -112,8 +133,8 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
                 {"error": "rate_limited"}, status_code=429, headers={"Retry-After": "60"}
             )
 
-        body = await request.body()
-        if len(body) > MAX_BODY_BYTES:
+        body = await _read_body_capped(request, MAX_BODY_BYTES)
+        if body is None:
             metrics.count("invalid")
             return JSONResponse({"error": "too_large"}, status_code=413)
         try:

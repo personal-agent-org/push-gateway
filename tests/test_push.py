@@ -136,6 +136,84 @@ async def test_oversized_body(client, fcm_router):
     assert resp.status_code == 413
 
 
+async def test_oversized_streamed_body_aborts_early(client, fcm_router):
+    sent_chunks = 0
+
+    async def gen():
+        nonlocal sent_chunks
+        for _ in range(64):
+            sent_chunks += 1
+            yield b"x" * 1024
+
+    # No Content-Length (chunked): the cap must trip while streaming.
+    resp = await client.post(
+        "/api/v1/push", content=gen(), headers={"content-type": "application/json"}
+    )
+    assert resp.status_code == 413
+    # Aborted right past the 4 KiB cap, not after buffering all 64 KiB.
+    assert sent_chunks <= 6
+
+
+def make_request(headers: dict[str, str]):
+    from starlette.requests import Request
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/",
+        "query_string": b"",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+        "client": ("9.9.9.9", 1234),
+    }
+    return Request(scope)
+
+
+def test_client_ip_resolution_precedence():
+    from push_gateway.main import _client_ip
+
+    xff = {"x-forwarded-for": "1.1.1.1, 2.2.2.2, 3.3.3.3"}
+    # Spoofable pre-appended values ignored: only the last (proxy-appended) hop counts.
+    assert _client_ip(make_request(xff), True) == "3.3.3.3"
+    assert _client_ip(make_request(xff), False) == "9.9.9.9"
+    assert _client_ip(make_request({**xff, "x-real-ip": "4.4.4.4"}), True) == "4.4.4.4"
+    cf = {**xff, "x-real-ip": "4.4.4.4", "cf-connecting-ip": "5.5.5.5"}
+    assert _client_ip(make_request(cf), True) == "5.5.5.5"
+    assert _client_ip(make_request({}), True) == "9.9.9.9"
+
+
+async def test_trust_proxy_spoofed_xff(creds_file, fcm_router):
+    import httpx
+
+    from push_gateway.config import Settings
+    from push_gateway.limits import MemoryStore
+    from push_gateway.main import create_app
+
+    store = MemoryStore()
+    app = create_app(Settings(fcm_credentials_file=creds_file, trust_proxy=True), store=store)
+    minute = int(time.time() // 60)
+    for m in (minute, minute + 1):
+        seed(store, f"ip:203.0.113.9:{m}", 600)
+
+    fcm_router.post(FCM_URL).respond(200, json={"name": "x"})
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://gw") as client:
+        # Exhausted IP in the trusted LAST position: limited.
+        resp = await client.post(
+            "/api/v1/push",
+            json=push_body(),
+            headers={"x-forwarded-for": "6.6.6.6, 203.0.113.9"},
+        )
+        assert resp.status_code == 429
+
+        # Attacker pre-appends the exhausted IP; the real last hop is clean: allowed.
+        resp2 = await client.post(
+            "/api/v1/push",
+            json=push_body(),
+            headers={"x-forwarded-for": "203.0.113.9, 198.51.100.7"},
+        )
+        assert resp2.status_code == 200
+
+
 async def test_bad_schema(client, fcm_router):
     for bad in [
         push_body(platform="ios"),

@@ -44,7 +44,7 @@ Configuration (env):
 | --- | --- | --- |
 | `FCM_CREDENTIALS_FILE` | unset | Path to the Firebase service account JSON. Without it the gateway starts but answers 503. |
 | `REDIS_URL` | unset | Shared rate-limit store for multi-replica setups. Unset = in-memory (single process). |
-| `TRUST_PROXY` | `false` | Use the first `X-Forwarded-For` value as the client IP (set behind a reverse proxy). |
+| `TRUST_PROXY` | `false` | Resolve the client IP from proxy headers: `CF-Connecting-IP`, then `X-Real-IP`, then the last `X-Forwarded-For` hop (set behind a reverse proxy). |
 | `GLOBAL_PER_MINUTE` | `50000` | Global send ceiling per minute; 503 when tripped. |
 | `PORT` | `8080` | Listen port. |
 

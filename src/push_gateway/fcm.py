@@ -40,7 +40,9 @@ class FcmClient:
     def __init__(self, credentials: dict[str, Any]) -> None:
         self._creds = credentials
         self._project_id: str = credentials["project_id"]
-        self._http = httpx.AsyncClient(timeout=10)
+        # Below the instances' 5s transport timeout so the gateway answers
+        # (502 upstream) before callers give up and trip their circuit breakers.
+        self._http = httpx.AsyncClient(timeout=4)
         self._token: str | None = None
         self._token_exp: float = 0.0
         self._token_lock = asyncio.Lock()
