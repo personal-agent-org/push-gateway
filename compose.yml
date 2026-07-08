@@ -1,0 +1,29 @@
+services:
+  gateway:
+    image: ghcr.io/personal-agent-org/push-gateway:latest
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      FCM_CREDENTIALS_FILE: /run/secrets/fcm-service-account.json
+      REDIS_URL: redis://redis:6379/0
+      TRUST_PROXY: "true"
+    volumes:
+      - ./fcm-service-account.json:/run/secrets/fcm-service-account.json:ro
+    depends_on:
+      - redis
+
+  # Optional: drop this service and unset REDIS_URL for in-memory limits
+  # (fine for a single gateway process).
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+# Caddy reverse-proxy snippet (Caddyfile):
+#
+#   push.example.com {
+#       reverse_proxy localhost:8080
+#   }
+#
+# Keep TRUST_PROXY=true only when the gateway is reachable through the proxy alone.
