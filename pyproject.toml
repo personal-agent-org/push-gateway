@@ -1,6 +1,6 @@
 [project]
 name = "push-gateway"
-version = "2026.8.27"  # CalVer: YYYY.M.DD, matching the release tag
+version = "2026.8.27"  # CalVer: YEAR.MONTH.MINOR, matching the release tag
 description = "Central FCM push relay for self-hosted Personal Agent instances"
 readme = "README.md"
 license = { file = "LICENSE" }
