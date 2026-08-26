@@ -20,6 +20,17 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
 
+# Prometheus scrape config:
+#
+#   scrape_configs:
+#     - job_name: push-gateway
+#       static_configs:
+#         - targets: ["gateway:8080"]
+#
+# /metrics is unauthenticated like /healthz. Keep it off the public listener if the gateway is
+# reachable from the internet -- the series carry no tokens or payloads, but they do report
+# your send volume.
+#
 # Caddy reverse-proxy snippet (Caddyfile):
 #
 #   push.example.com {

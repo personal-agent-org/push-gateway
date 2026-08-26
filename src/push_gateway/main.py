@@ -7,7 +7,8 @@ import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, Response
+from prometheus_client import CONTENT_TYPE_LATEST
 from pydantic import ValidationError
 
 from . import __version__
@@ -19,31 +20,15 @@ from .limits import (
     RateLimiter,
     RedisStore,
     Store,
+    StoreUnavailable,
     seconds_to_utc_midnight,
     token_hash,
     utc_midnight_iso,
 )
+from .metrics import Metrics
 from .schemas import PushRequest
 
 log = logging.getLogger("push_gateway")
-
-_OUTCOMES = ("delivered", "unregistered", "rate_limited", "invalid", "upstream_error", "tombstoned")
-
-
-class Metrics:
-    def __init__(self) -> None:
-        self.sends: dict[str, int] = dict.fromkeys(_OUTCOMES, 0)
-
-    def count(self, outcome: str) -> None:
-        self.sends[outcome] = self.sends.get(outcome, 0) + 1
-
-    def render(self) -> str:
-        lines = [
-            "# HELP sends_total Push relay attempts by outcome.",
-            "# TYPE sends_total counter",
-        ]
-        lines += [f'sends_total{{outcome="{o}"}} {n}' for o, n in self.sends.items()]
-        return "\n".join(lines) + "\n"
 
 
 def _rate_limits_body(counts: DailyCounts) -> dict[str, object]:
@@ -94,8 +79,14 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
     fcm = FcmClient(credentials) if credentials else None
     if store is None:
         store = RedisStore(settings.redis_url) if settings.redis_url else MemoryStore()
-    limiter = RateLimiter(store, settings.global_per_minute)
-    metrics = Metrics()
+    metrics = Metrics(
+        version=__version__,
+        upstream_configured=fcm is not None,
+        store_backend="redis" if settings.redis_url else "memory",
+    )
+    # The limiter reports its own fail-open moments: without this, Redis going away turns
+    # every limit off and nothing but a log line says so.
+    limiter = RateLimiter(store, settings.global_per_minute, on_store_failure=metrics.store_failed)
 
     log.info(
         "push gateway %s starting: relay=%s store=%s trust_proxy=%s global_per_minute=%d",
@@ -125,32 +116,48 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
 
     @app.post("/api/v1/push")
     async def push(request: Request) -> JSONResponse:
+        try:
+            return await _push(request)
+        except StoreUnavailable:
+            # The limiter could not decide, so nothing is relayed (fail closed). 503 with
+            # Retry-After and NOT 404: the caller must retry later, never conclude that the
+            # device token is dead and throw it away.
+            metrics.reject("store_unavailable")
+            log.warning("refusing push: rate-limit store unavailable")
+            return JSONResponse(
+                {"error": "unavailable"}, status_code=503, headers={"Retry-After": "30"}
+            )
+
+    async def _push(request: Request) -> JSONResponse:
         started = time.monotonic()
 
         if not await limiter.ip_allowed(_client_ip(request, settings.trust_proxy)):
-            metrics.count("rate_limited")
+            metrics.reject("ip_rate_limit")
             return JSONResponse(
                 {"error": "rate_limited"}, status_code=429, headers={"Retry-After": "60"}
             )
 
         body = await _read_body_capped(request, MAX_BODY_BYTES)
         if body is None:
-            metrics.count("invalid")
+            metrics.reject("too_large")
             return JSONResponse({"error": "too_large"}, status_code=413)
         try:
             req = PushRequest.model_validate_json(body)
         except ValidationError:
-            metrics.count("invalid")
+            metrics.reject("invalid")
             return JSONResponse({"error": "invalid"}, status_code=400)
 
         if fcm is None:
+            # Counted, because a gateway with no credentials refuses every push and used to
+            # look completely idle while doing it.
+            metrics.reject("not_configured")
             return JSONResponse({"error": "not_configured"}, status_code=503)
 
         th = token_hash(req.push_token)
 
         if await limiter.is_tombstoned(th):
             await limiter.record_result(th, success=False)
-            metrics.count("tombstoned")
+            metrics.reject("tombstoned")
             _log_send("tombstoned", th, req, started)
             return JSONResponse(
                 {"error": "unregistered", "rateLimits": await _limits(th)},
@@ -158,7 +165,7 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
             )
 
         if not await limiter.burst_allowed(th):
-            metrics.count("rate_limited")
+            metrics.reject("burst_rate_limit")
             return JSONResponse(
                 {"error": "rate_limited", "rateLimits": await _limits(th)},
                 status_code=429,
@@ -167,7 +174,7 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
 
         counts = await limiter.daily_counts(th)
         if counts.successful >= DAILY_QUOTA:
-            metrics.count("rate_limited")
+            metrics.reject("daily_quota")
             return JSONResponse(
                 {"error": "rate_limited", "rateLimits": _rate_limits_body(counts)},
                 status_code=429,
@@ -175,31 +182,35 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
             )
 
         if not await limiter.global_allowed():
-            metrics.count("rate_limited")
+            metrics.reject("global_rate_limit")
             return JSONResponse(
                 {"error": "rate_limited"}, status_code=503, headers={"Retry-After": "60"}
             )
 
+        upstream_started = time.monotonic()
         outcome = await fcm.send(
             req.push_token, req.data.frame_json(), req.priority, req.ttl, req.collapse_id
         )
+        # Timed around the Firebase call ALONE: the request also spends time in the limiter,
+        # and folding that in would hide a slow upstream behind a slow store.
+        upstream_seconds = time.monotonic() - upstream_started
 
         if outcome is SendOutcome.DELIVERED:
             await limiter.record_result(th, success=True)
-            metrics.count("delivered")
+            metrics.sent("delivered", req.priority, upstream_seconds)
             _log_send("delivered", th, req, started)
             return JSONResponse({"rateLimits": await _limits(th)})
 
         await limiter.record_result(th, success=False)
         if outcome is SendOutcome.UNREGISTERED:
             await limiter.tombstone(th)
-            metrics.count("unregistered")
+            metrics.sent("unregistered", req.priority, upstream_seconds)
             _log_send("unregistered", th, req, started)
             return JSONResponse(
                 {"error": "unregistered", "rateLimits": await _limits(th)},
                 status_code=404,
             )
-        metrics.count("upstream_error")
+        metrics.sent("upstream_error", req.priority, upstream_seconds)
         _log_send("upstream_error", th, req, started)
         return JSONResponse({"error": "upstream"}, status_code=502)
 
@@ -218,8 +229,8 @@ def create_app(settings: Settings | None = None, store: Store | None = None) -> 
         return {"ok": True}
 
     @app.get("/metrics")
-    async def metrics_endpoint() -> PlainTextResponse:
-        return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")
+    async def metrics_endpoint() -> Response:
+        return Response(metrics.render(), media_type=CONTENT_TYPE_LATEST)
 
     return app
 
