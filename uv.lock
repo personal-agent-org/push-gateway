@@ -298,7 +298,7 @@ wheels = [
 
 [[package]]
 name = "push-gateway"
-version = "0.1.0"
+version = "2026.8.27"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
