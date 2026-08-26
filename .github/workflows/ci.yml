@@ -31,8 +31,8 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]{4}\.(0?[1-9]|1[0-2])\.(0?[1-9]|[12][0-9]|3[01])(\.[0-9]+)?$ ]]; then
-            echo "Release tags must use CalVer: vYYYY.M.D or vYYYY.M.D.N"
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]{4}\.([1-9]|1[0-2])\.[0-9]+$ ]]; then
+            echo "Release tags must use CalVer: vYEAR.MONTH.MINOR"
             exit 1
           fi
       - uses: docker/setup-qemu-action@v3
