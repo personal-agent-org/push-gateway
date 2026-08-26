@@ -12,6 +12,7 @@ dependencies = [
     "pyjwt[crypto]>=2.8",
     "pydantic>=2.7",
     "redis>=5.0",
+    "prometheus-client>=0.20",
 ]
 
 [dependency-groups]

@@ -48,6 +48,54 @@ Configuration (env):
 | `GLOBAL_PER_MINUTE` | `50000` | Global send ceiling per minute; 503 when tripped. |
 | `PORT` | `8080` | Listen port. |
 
+## Operating it
+
+`GET /metrics` is a Prometheus scrape endpoint. `GET /healthz` is liveness; `GET /api/v1/info`
+reports version and limits.
+
+| Metric | Type | Labels | Answers |
+| --- | --- | --- | --- |
+| `push_gateway_sends_total` | counter | `outcome`, `priority` | Did Firebase take it? `delivered`, `unregistered`, `upstream_error`. |
+| `push_gateway_rejected_total` | counter | `reason` | Why a push never reached Firebase — each rate limit separately, plus `invalid`, `too_large`, `tombstoned`, `not_configured`, `store_unavailable`. |
+| `push_gateway_relay_duration_seconds` | histogram | `outcome` | How slow Firebase is. Timed around that call alone, so a slow store cannot masquerade as a slow upstream. |
+| `push_gateway_store_failures_total` | counter | `op` | The rate-limit store is unreachable. |
+| `push_gateway_upstream_configured` | gauge | — | `0` means no credentials: every push is refused. |
+| `push_gateway_store_backend` | gauge | `backend` | `memory` is per-process and does not survive a restart. |
+| `push_gateway_build_info` | gauge | `version` | Which build is running. |
+
+Plus the usual `process_*` and `python_*` series.
+
+Every series exists from startup at zero, so `rate()` alerts work on a gateway that has not
+sent anything yet — an absent series and a healthy one look identical otherwise.
+
+The two worth alerting on:
+
+```
+# The limiter cannot reach its store, so pushes are being refused.
+rate(push_gateway_store_failures_total[5m]) > 0
+
+# Firebase is rejecting or failing.
+rate(push_gateway_sends_total{outcome="upstream_error"}[5m]) > 0
+```
+
+The frame type (`data.type`) is deliberately **not** a label: it comes from the calling
+instance and matches `^[a-z_]{1,64}$`, so it is unbounded cardinality.
+
+Single process (see the `Dockerfile`). Running uvicorn with `--workers` would make each worker
+export only its own numbers; that needs `prometheus_client`'s multiprocess mode.
+
+## Rate limits fail closed
+
+If the rate-limit store cannot be reached, the gateway refuses with `503` and `Retry-After`
+rather than relaying. The limiter is the only thing between one looping device and the shared
+FCM quota every self-hosted instance draws from.
+
+Two deliberate exceptions: writes that happen *after* an outcome is decided (the daily counter,
+the tombstone) are best-effort, because refusing there would turn a delivered push into an
+error the caller retries — and the retry sends the notification twice. And a failed tombstone
+lookup answers `503`, never `404`: `404` means "this token is dead" and would make the instance
+throw away a perfectly good push token over a momentary blip.
+
 ## Privacy
 
 The gateway sees the sender IP, the push token, the frame type, and an opaque payload id. It
