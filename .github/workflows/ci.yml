@@ -24,6 +24,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - name: Validate CalVer tag
@@ -51,7 +52,8 @@ jobs:
             type=sha,prefix=sha-
             type=ref,event=tag
             type=match,pattern=^v(.*)$,group=1
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -60,3 +62,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - uses: sigstore/cosign-installer@v4.1.2
+      - name: Sign the push gateway image
+        run: >-
+          cosign sign --yes --recursive
+          ghcr.io/personal-agent-org/push-gateway@${{ steps.build.outputs.digest }}
