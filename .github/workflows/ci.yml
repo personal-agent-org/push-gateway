@@ -22,7 +22,7 @@ jobs:
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
       id-token: write
     steps:
@@ -67,3 +67,19 @@ jobs:
         run: >-
           cosign sign --yes --recursive
           ghcr.io/personal-agent-org/push-gateway@${{ steps.build.outputs.digest }}
+      - name: Create signed GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "repository=$GITHUB_REPOSITORY"
+            echo "commit=$GITHUB_SHA"
+            echo "version=$GITHUB_REF_NAME"
+            echo "image=ghcr.io/personal-agent-org/push-gateway@${{ steps.build.outputs.digest }}"
+          } > RELEASE-MANIFEST
+          cosign sign-blob --yes --bundle RELEASE-MANIFEST.sigstore.json RELEASE-MANIFEST
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            RELEASE-MANIFEST RELEASE-MANIFEST.sigstore.json
