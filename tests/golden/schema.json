@@ -1,0 +1,27 @@
+[
+  {
+    "name": "minimal valid frame",
+    "valid": true,
+    "body": {"v": 1, "push_token": "device-token", "platform": "android", "priority": "high", "data": {"type": "chat_reply", "payload_id": "run:abc"}}
+  },
+  {
+    "name": "pydantic-compatible integer conversion",
+    "valid": true,
+    "body": {"v": "1", "push_token": "device-token", "platform": "android", "priority": "normal", "ttl": "60", "app_id": "ignored", "data": {"type": "chat_reply", "payload_id": "run:abc", "v": "2", "count": 3}}
+  },
+  {
+    "name": "unknown top-level field",
+    "valid": false,
+    "body": {"v": 1, "push_token": "device-token", "platform": "android", "priority": "high", "unexpected": true, "data": {"type": "chat_reply", "payload_id": "run:abc"}}
+  },
+  {
+    "name": "nested extra data",
+    "valid": false,
+    "body": {"v": 1, "push_token": "device-token", "platform": "android", "priority": "high", "data": {"type": "chat_reply", "payload_id": "run:abc", "nested": {"a": 1}}}
+  },
+  {
+    "name": "invalid frame identifiers",
+    "valid": false,
+    "body": {"v": 1, "push_token": "device-token", "platform": "android", "priority": "high", "data": {"type": "Bad-Type!", "payload_id": "bad id"}}
+  }
+]

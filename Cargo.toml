@@ -1,0 +1,34 @@
+[package]
+name = "push-gateway"
+version = "2026.8.29"
+edition = "2024"
+license = "MIT"
+description = "Central FCM push relay for self-hosted Personal Agent instances"
+
+[dependencies]
+async-trait = "0.1"
+axum = { version = "0.8", features = ["macros"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+futures-util = "0.3"
+http-body-util = "0.1"
+jsonwebtoken = "9"
+once_cell = "1"
+prometheus = { version = "0.14", features = ["process"] }
+redis = { version = "0.32", features = ["aio", "tokio-comp"] }
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

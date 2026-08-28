@@ -63,7 +63,7 @@ reports version and limits.
 | `push_gateway_store_backend` | gauge | `backend` | `memory` is per-process and does not survive a restart. |
 | `push_gateway_build_info` | gauge | `version` | Which build is running. |
 
-Plus the usual `process_*` and `python_*` series.
+Plus native `process_*` series. Python runtime metrics no longer apply.
 
 Every series exists from startup at zero, so `rate()` alerts work on a gateway that has not
 sent anything yet — an absent series and a healthy one look identical otherwise.
@@ -81,8 +81,7 @@ rate(push_gateway_sends_total{outcome="upstream_error"}[5m]) > 0
 The frame type (`data.type`) is deliberately **not** a label: it comes from the calling
 instance and matches `^[a-z_]{1,64}$`, so it is unbounded cardinality.
 
-Single process (see the `Dockerfile`). Running uvicorn with `--workers` would make each worker
-export only its own numbers; that needs `prometheus_client`'s multiprocess mode.
+The gateway is one asynchronous Rust process (see the `Dockerfile`).
 
 ## Rate limits fail closed
 
@@ -106,8 +105,8 @@ wake-up signals, the app fetches content directly from its own instance.
 ## Development
 
 ```
-uv sync
-uv run ruff check .
-uv run pytest -q
-uv run uvicorn --factory push_gateway.main:create_app --reload
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo run
 ```
