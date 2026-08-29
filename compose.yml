@@ -17,7 +17,7 @@ services:
   # Optional: drop this service and unset REDIS_URL for in-memory limits
   # (fine for a single gateway process).
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     restart: unless-stopped
 
 # Prometheus scrape config:
